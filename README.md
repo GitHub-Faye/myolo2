@@ -160,3 +160,163 @@ The code is based on [ultralytics](https://github.com/ultralytics/ultralytics). 
 }
 ```
 
+# YOLOv12-Face
+
+YOLOv12-Face是在YOLOv12基础上修改的人脸检测和5点关键点检测模型。该模型可以同时检测人脸位置和5个面部关键点（左眼、右眼、鼻尖、左嘴角、右嘴角）。
+
+## 特点
+
+- 基于YOLOv12的注意力机制驱动的实时目标检测框架
+- 支持人脸边界框检测和5点人脸关键点定位
+- 保持YOLOv12高效的推理速度和精度
+- 支持不同规模的模型变体(nano/small/medium/large/xlarge)
+
+## 文件结构
+
+- `ultralytics/cfg/models/v12/yolov12-face.yaml`: 模型配置文件
+- `ultralytics/cfg/datasets/face-landmarks.yaml`: 数据集配置文件
+
+## 安装
+
+确保已安装最新版本的Ultralytics库:
+
+```bash
+pip install ultralytics
+```
+
+## 数据集准备
+
+准备包含人脸和关键点标注的数据集，组织结构如下：
+
+```
+face-landmarks/
+├── train/
+│   ├── images/
+│   │   ├── img1.jpg
+│   │   ├── img2.jpg
+│   │   └── ...
+│   └── labels/
+│       ├── img1.txt
+│       ├── img2.txt
+│       └── ...
+├── val/
+│   ├── images/
+│   │   └── ...
+│   └── labels/
+│       └── ...
+└── test/
+    ├── images/
+    │   └── ...
+    └── labels/
+        └── ...
+```
+
+标签文件格式（每行一个目标）：
+```
+0 x_center y_center width height x1 y1 v1 x2 y2 v2 x3 y3 v3 x4 y4 v4 x5 y5 v5
+```
+
+其中：
+- `0`: 类别ID (人脸)
+- `x_center y_center width height`: 归一化的边界框坐标和尺寸
+- `x1 y1 v1 ... x5 y5 v5`: 5个关键点的归一化坐标和可见性
+  - 左眼: (x1, y1, v1)
+  - 右眼: (x2, y2, v2)
+  - 鼻尖: (x3, y3, v3)
+  - 左嘴角: (x4, y4, v4)
+  - 右嘴角: (x5, y5, v5)
+  - 可见性v取值：0=不可见，1=可见但模糊，2=完全可见
+
+## 训练
+
+### 使用命令行
+
+```bash
+# 从预训练的YOLOv12模型训练
+yolo train model=yolov12-face.yaml data=face-landmarks.yaml pretrained=yolov12n.pt epochs=100 imgsz=640
+
+# 从头开始训练
+yolo train model=yolov12-face.yaml data=face-landmarks.yaml epochs=300 imgsz=640
+```
+
+### 使用Python代码
+
+```python
+from ultralytics import YOLO
+
+# 从预训练的YOLOv12模型加载
+model = YOLO('yolov12n.pt')
+# 训练模型
+results = model.train(
+    model='yolov12-face.yaml',  # 模型配置
+    data='face-landmarks.yaml',  # 数据集配置
+    epochs=100,                  # 训练轮数
+    imgsz=640,                   # 图像大小
+    batch=16,                    # 批次大小
+    name='yolov12-face'          # 结果保存名称
+)
+```
+
+## 评估
+
+```bash
+# 评估训练好的模型
+yolo val model=runs/train/yolov12-face/weights/best.pt data=face-landmarks.yaml
+```
+
+## 推理
+
+```python
+from ultralytics import YOLO
+
+# 加载训练好的模型
+model = YOLO('runs/train/yolov12-face/weights/best.pt')
+
+# 单张图像推理
+results = model('path/to/face/image.jpg')
+
+# 显示结果
+for r in results:
+    boxes = r.boxes  # 边界框
+    keypoints = r.keypoints  # 关键点
+    
+    # 打印结果
+    print(f"检测到 {len(boxes)} 个人脸")
+    for i, box in enumerate(boxes):
+        print(f"人脸 {i+1}: {box.xyxy.tolist()[0]}, 置信度: {box.conf.item():.2f}")
+        kpts = keypoints[i].data.tolist()[0]
+        print(f"  左眼: ({kpts[0][0]:.1f}, {kpts[0][1]:.1f})")
+        print(f"  右眼: ({kpts[1][0]:.1f}, {kpts[1][1]:.1f})")
+        print(f"  鼻尖: ({kpts[2][0]:.1f}, {kpts[2][1]:.1f})")
+        print(f"  左嘴角: ({kpts[3][0]:.1f}, {kpts[3][1]:.1f})")
+        print(f"  右嘴角: ({kpts[4][0]:.1f}, {kpts[4][1]:.1f})")
+    
+# 保存结果
+model('path/to/image.jpg', save=True)  # 保存标注后的图像
+
+# 视频/摄像头推理
+model('path/to/video.mp4', show=True)  # 显示结果
+model(0)  # 使用摄像头
+```
+
+## 导出模型
+
+```bash
+# 导出为ONNX格式
+yolo export model=runs/train/yolov12-face/weights/best.pt format=onnx
+```
+
+## 自定义模型规模
+
+YOLOv12-Face提供5种规模的模型，可以根据应用需求选择:
+
+- `yolov12n-face.pt`: 最小模型，适合移动设备
+- `yolov12s-face.pt`: 小型模型，平衡速度和精度
+- `yolov12m-face.pt`: 中型模型，提供更好的精度
+- `yolov12l-face.pt`: 大型模型，高精度
+- `yolov12x-face.pt`: 超大模型，最高精度
+
+## 参考
+- YOLOv12: https://github.com/ultralytics/ultralytics
+- 人脸关键点检测: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/models/yolo/pose/val.py
+
