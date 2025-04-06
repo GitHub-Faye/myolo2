@@ -1,0 +1,13 @@
+path: /content/widerface
+train: train
+val: val
+test: test
+
+nc: 1
+names: ['face']
+
+# 关键点信息
+kpt_shape: [5, 3]  # 5个关键点，每个点有3个值 [x,y,visible]
+flip_idx: [1, 0, 2, 4, 3]  # 水平翻转时的关键点对应关系：右眼<->左眼，右嘴角<->左嘴角
+# 关键点名称：左眼、右眼、鼻子、左嘴角、右嘴角
+kpt_names: ['left_eye', 'right_eye', 'nose', 'left_mouth', 'right_mouth']
