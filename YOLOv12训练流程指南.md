@@ -13,6 +13,13 @@
   - [修改损失函数](#修改损失函数)
   - [在自定义模型中使用预训练参数](#在自定义模型中使用预训练参数)
   - [添加自定义回调函数](#添加自定义回调函数)
+- [YOLOv12继续训练指南](#yolov12继续训练指南)
+  - [从检查点恢复训练](#从检查点恢复训练)
+  - [微调已有模型](#微调已有模型)
+  - [跨数据集迁移学习](#跨数据集迁移学习)
+  - [更改训练策略继续训练](#更改训练策略继续训练)
+  - [多阶段训练方法](#多阶段训练方法)
+  - [问题排查与解决](#问题排查与解决)
 - [高级训练技巧](#高级训练技巧)
   - [分布式训练](#分布式训练)
   - [混合精度训练](#混合精度训练)
@@ -894,6 +901,553 @@ model.train(data='custom.yaml', epochs=10)
 - `on_model_save`
 - `on_params_update`
 - `teardown`
+
+## YOLOv12继续训练指南
+
+在实际应用中，我们经常需要继续训练已有的模型，原因可能包括：
+- 训练被意外中断需要恢复
+- 使用新数据集进行微调
+- 改进已有模型的性能
+- 调整训练策略以获得更好结果
+- 将预训练模型迁移到特定任务
+
+本章节将详细介绍各种继续训练场景下的方法和技巧。
+
+### 从检查点恢复训练
+
+#### 基本恢复训练
+
+当训练过程意外中断（如断电、程序崩溃），或者你想在上次训练的基础上继续训练时，可以使用以下方法：
+
+```bash
+# 命令行方式从最后一个检查点恢复
+yolo train resume=True model=runs/train/exp_name/weights/last.pt
+
+# 或者直接指定模型路径，模型会自动检测是否为中断的训练
+yolo train model=runs/train/exp_name/weights/last.pt data=custom.yaml
+```
+
+```python
+# Python方式从最后一个检查点恢复
+from ultralytics import YOLO
+
+model = YOLO('runs/train/exp_name/weights/last.pt')
+model.train(resume=True)  # 自动加载上次的训练配置和数据集设置
+```
+
+#### 自动恢复机制工作原理
+
+YOLOv12的恢复训练机制在`BaseTrainer`类的`check_resume`和`resume_training`方法中实现：
+
+1. 加载检查点文件，包括:
+   - 模型权重状态
+   - 优化器状态
+   - EMA(指数移动平均)状态
+   - 训练轮次信息
+   - 最佳适应度分数
+
+2. 从上次中断的epoch继续训练，保留之前的训练历史
+
+3. 自动适应学习率调度和数据增强策略
+
+#### 修改部分参数的恢复训练
+
+恢复训练时，可以覆盖部分参数：
+
+```python
+from ultralytics import YOLO
+
+model = YOLO('runs/train/exp_name/weights/last.pt')
+# 恢复训练但修改批量大小和设备
+model.train(
+    resume=True,
+    batch=32,             # 修改批量大小
+    device='cuda:0',      # 指定GPU
+    imgsz=960,            # 修改图像尺寸
+    amp=True              # 启用混合精度
+)
+```
+
+```bash
+# 命令行中修改参数
+yolo train resume=True model=runs/train/exp_name/weights/last.pt batch=32 device=0 imgsz=960
+```
+
+#### 从特定轮次继续训练
+
+如果你保存了中间检查点，可以从特定轮次继续：
+
+```python
+from ultralytics import YOLO
+
+# 从第50轮检查点继续训练
+model = YOLO('runs/train/exp_name/weights/epoch50.pt')
+model.train(epochs=100)  # 从第50轮继续训练到第100轮
+```
+
+### 微调已有模型
+
+微调(Fine-tuning)是指在预训练模型的基础上，使用特定任务的数据集进行再训练，以适应特定任务。
+
+#### 基本微调方法
+
+```python
+from ultralytics import YOLO
+
+# 加载预训练模型
+model = YOLO('yolov12n.pt')  # 或其他预训练模型
+
+# 微调模型
+results = model.train(
+    data='custom_dataset.yaml',  # 自定义数据集
+    epochs=50,                   # 训练轮数
+    imgsz=640,                   # 输入尺寸
+    batch=16,                    # 批量大小
+    name='fine_tuned_model'      # 保存名称
+)
+```
+
+```bash
+# 命令行微调方式
+yolo train model=yolov12n.pt data=custom_dataset.yaml epochs=50 name=fine_tuned_model
+```
+
+#### 冻结部分层进行微调
+
+通常在微调时，我们希望只更新模型的部分层（如检测头），而保持其他层（如主干网络）不变：
+
+```python
+from ultralytics import YOLO
+
+model = YOLO('yolov12n.pt')
+# 冻结前10层，只训练其余层
+model.train(
+    data='custom_dataset.yaml',
+    epochs=50,
+    freeze=10  # 冻结前10层
+)
+```
+
+```bash
+# 命令行方式冻结层
+yolo train model=yolov12n.pt data=custom_dataset.yaml freeze=10
+```
+
+#### 不同冻结策略的选择
+
+| 冻结策略 | 适用场景 | 命令 |
+|---------|---------|------|
+| 冻结主干网络 | 目标类别与预训练相似，但场景不同 | `freeze=backbone` |
+| 冻结底层特征 | 数据集较小，避免过拟合 | `freeze=10` |
+| 只训练检测头 | 快速适应新任务，保留特征提取能力 | `freeze=-2` |
+
+```python
+# 冻结不同部分的示例
+model = YOLO('yolov12n.pt')
+
+# 冻结主干网络
+model.train(data='custom.yaml', epochs=30, freeze='backbone')
+
+# 冻结前17层
+model.train(data='custom.yaml', epochs=30, freeze=17)
+
+# 只训练最后两层
+model.train(data='custom.yaml', epochs=30, freeze=-2)
+```
+
+#### 逐步解冻微调
+
+逐步解冻是一种有效的微调策略，先冻结大部分层，然后逐步解冻：
+
+```python
+from ultralytics import YOLO
+
+model = YOLO('yolov12n.pt')
+
+# 第1阶段：冻结所有主干层，只训练头部
+model.train(data='custom.yaml', epochs=20, freeze='backbone', name='stage1')
+
+# 第2阶段：解冻部分主干层
+model = YOLO('runs/train/stage1/weights/best.pt')
+model.train(data='custom.yaml', epochs=20, freeze=10, name='stage2')
+
+# 第3阶段：解冻所有层，使用较小学习率
+model = YOLO('runs/train/stage2/weights/best.pt')
+model.train(data='custom.yaml', epochs=20, freeze=0, lr0=0.0001, name='stage3')
+```
+
+### 跨数据集迁移学习
+
+跨数据集迁移学习是指将在一个数据集上训练的模型迁移到另一个不同但相关的数据集上。
+
+#### COCO预训练模型迁移到自定义数据集
+
+```python
+from ultralytics import YOLO
+
+# 加载COCO预训练模型
+model = YOLO('yolov12n.pt')
+
+# 迁移到自定义数据集
+model.train(
+    data='custom_dataset.yaml',
+    epochs=100,
+    imgsz=640,
+    batch=16,
+    name='transfer_learning'
+)
+```
+
+#### 自定义数据集之间的迁移
+
+当你有两个相关但不同的数据集时，可以先在一个数据集上训练，再迁移到另一个数据集：
+
+```python
+from ultralytics import YOLO
+
+# 首先在数据集A上训练
+model = YOLO('yolov12n.pt')
+model.train(data='datasetA.yaml', epochs=50, name='modelA')
+
+# 然后迁移到数据集B
+model = YOLO('runs/train/modelA/weights/best.pt')
+model.train(
+    data='datasetB.yaml',
+    epochs=30,
+    lr0=0.001,  # 使用较小的学习率
+    name='modelB'
+)
+```
+
+#### 处理类别数量不同的迁移
+
+当目标数据集的类别数量与源数据集不同时，需要特殊处理：
+
+```python
+from ultralytics import YOLO
+
+# 加载预训练模型
+model = YOLO('yolov12n.pt')  # 80类COCO预训练模型
+
+# 迁移到具有不同类别数的数据集
+# 注意：YOLOv12会自动处理不同类别数的情况，重新初始化分类层
+results = model.train(
+    data='custom3classes.yaml',  # 假设只有3个类别
+    epochs=50
+)
+```
+
+### 更改训练策略继续训练
+
+在一轮训练后，可能需要调整训练策略继续优化模型性能。
+
+#### 调整学习率继续训练
+
+```python
+from ultralytics import YOLO
+
+# 加载之前训练的模型
+model = YOLO('runs/train/exp_name/weights/best.pt')
+
+# 使用较小的学习率继续训练
+model.train(
+    data='custom.yaml',
+    epochs=30,
+    lr0=0.0005,  # 较小的初始学习率
+    lrf=0.0001   # 较小的最终学习率因子
+)
+```
+
+```bash
+# 命令行调整学习率
+yolo train model=runs/train/exp_name/weights/best.pt data=custom.yaml lr0=0.0005 lrf=0.0001
+```
+
+#### 修改优化器继续训练
+
+```python
+from ultralytics import YOLO
+
+model = YOLO('runs/train/exp_name/weights/best.pt')
+
+# 切换优化器继续训练
+model.train(
+    data='custom.yaml',
+    epochs=30,
+    optimizer='AdamW',  # 切换到AdamW优化器
+    weight_decay=0.01   # 调整权重衰减
+)
+```
+
+#### 调整数据增强策略
+
+如果模型表现出过拟合或欠拟合迹象，可以调整数据增强策略继续训练：
+
+```python
+from ultralytics import YOLO
+
+model = YOLO('runs/train/exp_name/weights/best.pt')
+
+# 加强数据增强继续训练
+model.train(
+    data='custom.yaml',
+    epochs=30,
+    mosaic=1.0,      # 增强马赛克增强
+    mixup=0.1,       # 添加mixup增强
+    copy_paste=0.1,  # 添加复制粘贴增强
+    degrees=10.0,    # 增加旋转角度
+    translate=0.2    # 增加平移范围
+)
+```
+
+```bash
+# 命令行减少数据增强（用于模型收敛后的微调）
+yolo train model=runs/train/exp_name/weights/best.pt mosaic=0 augment=False
+```
+
+#### 调整输入尺寸继续训练
+
+提高输入尺寸可以改善小目标检测性能：
+
+```python
+from ultralytics import YOLO
+
+model = YOLO('runs/train/exp_name/weights/best.pt')
+
+# 提高输入尺寸继续训练
+model.train(
+    data='custom.yaml',
+    epochs=30,
+    imgsz=1280  # 更大的输入尺寸
+)
+```
+
+### 多阶段训练方法
+
+多阶段训练是一种高级训练策略，通过多个阶段的不同配置来优化模型。
+
+#### 逐步增加分辨率训练
+
+先低分辨率快速训练，再高分辨率精细调整：
+
+```python
+from ultralytics import YOLO
+
+# 阶段1：低分辨率快速训练
+model = YOLO('yolov12n.pt')
+model.train(data='custom.yaml', epochs=30, imgsz=384, name='stage1_low_res')
+
+# 阶段2：中等分辨率训练
+model = YOLO('runs/train/stage1_low_res/weights/best.pt')
+model.train(data='custom.yaml', epochs=20, imgsz=640, name='stage2_mid_res')
+
+# 阶段3：高分辨率微调
+model = YOLO('runs/train/stage2_mid_res/weights/best.pt')
+model.train(data='custom.yaml', epochs=10, imgsz=1280, name='stage3_high_res')
+```
+
+#### 课程学习策略
+
+从简单样本开始，逐步引入困难样本：
+
+```python
+from ultralytics import YOLO
+import shutil
+import os
+
+# 准备不同难度的数据集
+# 假设已按难度分为easy.yaml、medium.yaml、hard.yaml
+
+# 阶段1：容易样本训练
+model = YOLO('yolov12n.pt')
+model.train(data='easy.yaml', epochs=30, name='stage1_easy')
+
+# 阶段2：中等难度样本训练
+model = YOLO('runs/train/stage1_easy/weights/best.pt')
+model.train(data='medium.yaml', epochs=20, name='stage2_medium')
+
+# 阶段3：困难样本训练
+model = YOLO('runs/train/stage2_medium/weights/best.pt')
+model.train(data='hard.yaml', epochs=10, name='stage3_hard')
+
+# 阶段4：全部样本微调
+model = YOLO('runs/train/stage3_hard/weights/best.pt')
+model.train(data='full.yaml', epochs=10, name='stage4_full')
+```
+
+#### 模型蒸馏训练
+
+使用大模型指导小模型训练：
+
+```python
+# 需要自定义蒸馏损失函数来实现
+from ultralytics import YOLO
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# 1. 训练教师模型
+teacher = YOLO('yolov12l.pt')  # 大模型作为教师
+teacher.train(data='custom.yaml', epochs=50, name='teacher_model')
+
+# 2. 加载教师和学生模型
+teacher = YOLO('runs/train/teacher_model/weights/best.pt')
+student = YOLO('yolov12n.pt')  # 小模型作为学生
+
+# 3. 自定义蒸馏训练（伪代码）
+# 实际实现需要自定义损失函数和训练循环
+class DistillationTrainer:
+    def __init__(self, teacher, student, alpha=0.5):
+        self.teacher = teacher
+        self.student = student
+        self.alpha = alpha
+        
+    def distill_loss(self, student_outputs, teacher_outputs, targets):
+        # 计算学生模型的标准损失
+        student_loss = F.mse_loss(student_outputs, targets)
+        
+        # 计算蒸馏损失
+        distill_loss = F.mse_loss(student_outputs, teacher_outputs)
+        
+        # 组合损失
+        total_loss = (1 - self.alpha) * student_loss + self.alpha * distill_loss
+        return total_loss
+    
+    def train(self, data, epochs):
+        # 实现蒸馏训练逻辑...
+        pass
+
+# 4. 进行蒸馏训练
+distill_trainer = DistillationTrainer(teacher.model, student.model)
+distill_trainer.train(data='custom.yaml', epochs=30)
+```
+
+### 问题排查与解决
+
+继续训练过程中可能遇到各种问题，这里提供常见问题的解决方案。
+
+#### 恢复训练失败
+
+当恢复训练失败时，可能有以下原因：
+
+1. **模型结构不匹配**：
+
+   ```python
+   # 检查模型结构
+   from ultralytics import YOLO
+   model = YOLO('path/to/model.pt')
+   print(model.model)  # 查看模型结构
+   ```
+
+   解决方案：确保使用相同结构的模型进行训练。
+
+2. **优化器状态不兼容**：
+
+   ```python
+   # 忽略优化器状态重新开始训练
+   from ultralytics import YOLO
+   
+   model = YOLO('path/to/model.pt')
+   # 使用新的优化器状态
+   model.train(data='custom.yaml', epochs=100, optimizer='reset')
+   ```
+
+3. **检查点损坏**：
+
+   可能是由于训练过程中的意外中断导致检查点文件损坏。尝试使用之前的检查点：
+
+   ```bash
+   # 使用倒数第二个检查点
+   yolo train resume=True model=runs/train/exp_name/weights/last.pt-1
+   ```
+
+#### 微调时过拟合
+
+1. **增加正则化**：
+
+   ```python
+   model = YOLO('path/to/model.pt')
+   model.train(
+       data='custom.yaml',
+       epochs=50,
+       weight_decay=0.001,  # 增加权重衰减
+       dropout=0.1          # 添加dropout
+   )
+   ```
+
+2. **增强数据增强**：
+
+   ```python
+   model = YOLO('path/to/model.pt')
+   model.train(
+       data='custom.yaml',
+       epochs=50,
+       mosaic=1.0,
+       mixup=0.5,
+       copy_paste=0.3,
+       degrees=15.0
+   )
+   ```
+
+3. **减少训练轮数，使用早停**：
+
+   ```python
+   model = YOLO('path/to/model.pt')
+   model.train(
+       data='custom.yaml',
+       epochs=100,
+       patience=10  # 10轮无改善自动停止
+   )
+   ```
+
+#### 学习率相关问题
+
+1. **学习率过高或过低**：
+
+   ```python
+   # 尝试不同的学习率
+   model = YOLO('path/to/model.pt')
+   
+   # 学习率过高导致不稳定，尝试更小的学习率
+   model.train(data='custom.yaml', epochs=50, lr0=0.0001)
+   
+   # 学习率过低导致收敛慢，尝试更大的学习率
+   model.train(data='custom.yaml', epochs=50, lr0=0.01)
+   ```
+
+2. **自适应学习率探索**：
+
+   ```python
+   # 使用学习率查找器确定最佳学习率
+   from ultralytics import YOLO
+   
+   model = YOLO('path/to/model.pt')
+   model.train(data='custom.yaml', epochs=1, lr_find=True)  # 只训练1轮，启用学习率查找
+   ```
+
+#### 类别不平衡问题
+
+1. **调整类别权重**：
+
+   ```python
+   model = YOLO('path/to/model.pt')
+   model.train(
+       data='custom.yaml',
+       epochs=50,
+       class_weights=[1.0, 2.0, 3.0]  # 为稀有类别赋予更高权重
+   )
+   ```
+
+2. **调整焦点损失参数**：
+
+   ```python
+   model = YOLO('path/to/model.pt')
+   model.train(
+       data='custom.yaml',
+       epochs=50,
+       fl_gamma=2.0  # 增加gamma值，关注更困难的样本
+   )
+   ```
 
 ## 高级训练技巧
 
