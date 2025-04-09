@@ -429,6 +429,23 @@ class PoseModel(DetectionModel):
         return v8PoseLoss(self)
 
 
+class CustomPoseModel(DetectionModel):
+    """YOLOv12 custom pose model."""
+
+    def __init__(self, cfg="yolov12n-custompose.yaml", ch=3, nc=None, data_kpt_shape=(None, None), verbose=True):
+        """Initialize YOLOv12 Custom Pose model."""
+        if not isinstance(cfg, dict):
+            cfg = yaml_model_load(cfg)  # load model YAML
+        if any(data_kpt_shape) and list(data_kpt_shape) != list(cfg["kpt_shape"]):
+            LOGGER.info(f"Overriding model.yaml kpt_shape={cfg['kpt_shape']} with kpt_shape={data_kpt_shape}")
+            cfg["kpt_shape"] = data_kpt_shape
+        super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+
+    def init_criterion(self):
+        """Initialize the loss criterion for the CustomPoseModel."""
+        return v8PoseLoss(self)
+
+
 class ClassificationModel(BaseModel):
     """YOLOv8 classification model."""
 
@@ -1176,6 +1193,8 @@ def guess_model_task(model):
             return "classify"
         elif "-pose" in model.stem or "pose" in model.parts:
             return "pose"
+        elif "-custompose" in model.stem or "custompose" in model.parts:
+            return "custompose"
         elif "-obb" in model.stem or "obb" in model.parts:
             return "obb"
         elif "detect" in model.parts:

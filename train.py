@@ -6,7 +6,7 @@ pretrained_model = YOLO('yolov12n.pt')
 pretrained_weights = pretrained_model.model.state_dict()
 
 # 2. 创建自定义人脸检测模型
-custom_model = YOLO('yolov12-face.yaml')
+custom_model = YOLO('yolov12n-custompose.yaml')
 custom_state = custom_model.model.state_dict()
 
 # 打印详细的层信息
