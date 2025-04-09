@@ -1,0 +1,16 @@
+# 数据集配置
+path: D:\yolov12-main\yolov12-main\widerface_litel  # 数据集根目录
+train: train                           # 训练集路径
+val: val                              # 验证集路径
+test: test                            # 测试集路径
+
+# 类别信息
+nc: 1                                 # 类别数量
+names: ['face']                       # 类别名称
+
+# 关键点信息
+kpt_shape: [5, 3]                     # 5个关键点，每个点3个值 [x,y,visible]
+flip_idx: [1, 0, 2, 4, 3]            # 水平翻转时的关键点对应关系（左眼<->右眼，左嘴角<->右嘴角）
+
+# 关键点名称
+kpt_names: ['left_eye', 'right_eye', 'nose', 'left_mouth', 'right_mouth']
