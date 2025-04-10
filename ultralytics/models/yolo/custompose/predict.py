@@ -24,6 +24,17 @@ class CustomPosePredictor(DetectionPredictor):
         """Initializes CustomPosePredictor, sets task to 'custompose' and logs a warning for using 'mps' as device."""
         super().__init__(cfg, overrides, _callbacks)
         self.args.task = "custompose"
+        
+        # 获取并保存关键点形状，从多种可能的来源
+        if hasattr(self.model, 'kpt_shape'):  # 直接属性访问（训练模式）
+            self.kpt_shape = self.model.kpt_shape
+        elif hasattr(self.model, 'yaml') and 'kpt_shape' in self.model.yaml:  # 从yaml配置获取
+            self.kpt_shape = self.model.yaml['kpt_shape']
+        else:  # 使用默认值
+            self.kpt_shape = [5, 3]  # 设置为项目中实际使用的关键点数量
+            LOGGER.warning(f"WARNING ⚠️ Could not determine kpt_shape, using default: {self.kpt_shape}")
+        
+        # MPS相关警告
         if isinstance(self.args.device, str) and self.args.device.lower() == "mps":
             LOGGER.warning(
                 "WARNING ⚠️ Apple MPS known Pose bug. Recommend 'device=cpu' for Pose models. "
@@ -48,7 +59,8 @@ class CustomPosePredictor(DetectionPredictor):
         results = []
         for pred, orig_img, img_path in zip(preds, orig_imgs, self.batch[0]):
             pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape).round()
-            pred_kpts = pred[:, 6:].view(len(pred), *self.model.kpt_shape) if len(pred) else pred[:, 6:]
+            # 使用self.kpt_shape而不是self.model.kpt_shape
+            pred_kpts = pred[:, 6:].view(len(pred), *self.kpt_shape) if len(pred) else pred[:, 6:]
             pred_kpts = ops.scale_coords(img.shape[2:], pred_kpts, orig_img.shape)
             results.append(
                 Results(orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6], keypoints=pred_kpts)
