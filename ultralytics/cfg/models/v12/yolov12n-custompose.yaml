@@ -37,4 +37,4 @@ head:
   - [[-1, 8], 1, Concat, [1]]  # cat head P5
   - [-1, 1, C3k2, [512, True]]  # 20 (P5/32-large)
 
-  - [[14, 17, 20], 1, Pose, [nc, kpt_shape]]  # Pose(P3, P4, P5) 
+  - [[14, 17, 20], 1, CustomPoseModel, [nc, kpt_shape]]  # Pose(P3, P4, P5) 

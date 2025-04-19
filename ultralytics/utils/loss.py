@@ -598,6 +598,121 @@ class v8PoseLoss(v8DetectionLoss):
         return kpts_loss, kpts_obj_loss
 
 
+class WingLoss(nn.Module):
+    """
+    Wing Loss用于面部关键点回归。
+    
+    论文参考: https://arxiv.org/abs/1711.06753
+    """
+    def __init__(self, w=10.0, epsilon=2.0):
+        """初始化Wing Loss"""
+        super().__init__()
+        self.w = w
+        self.epsilon = epsilon
+        self.C = self.w - self.w * torch.log(torch.tensor(1.0 + self.w / self.epsilon))
+        
+    def forward(self, pred_kpts, gt_kpts, kpt_mask, area=None):
+        """计算Wing Loss"""
+        # 计算预测点和真实点之间的欧氏距离
+        diff = (pred_kpts[..., :2] - gt_kpts[..., :2]).abs()
+        
+        # 应用Wing Loss公式
+        condition = diff < self.w
+        loss = torch.where(
+            condition,
+            self.w * torch.log(1.0 + diff / self.epsilon),
+            diff - self.C
+        )
+        
+        # 应用关键点掩码（只对可见关键点计算损失）
+        if kpt_mask is not None:
+            loss = loss * kpt_mask.unsqueeze(-1)
+            
+        # 计算每个实例的损失均值
+        if area is not None:
+            # 可以使用area进行归一化，类似于KeypointLoss
+            loss = loss.sum(dim=(1, 2)) / (kpt_mask.sum(dim=1).clamp(min=1) * 2)
+        else:
+            # 简单地在所有关键点上取平均
+            loss = loss.mean(dim=(1, 2))
+            
+        return loss.mean()
+
+
+class CustomPoseLoss(v8PoseLoss):
+    """用于自定义姿态估计的损失函数，使用Wing Loss进行landmark回归。"""
+    
+    def __init__(self, model):
+        """初始化CustomPoseLoss。"""
+        super().__init__(model)
+        # 替换关键点损失为Wing Loss
+        self.wing_loss = WingLoss(w=10.0, epsilon=2.0)
+        # 关键点损失权重因子
+        self.landmark_weight = getattr(model.args, 'landmark_weight', 1.0)
+        
+    def calculate_keypoints_loss(
+        self, masks, target_gt_idx, keypoints, batch_idx, stride_tensor, target_bboxes, pred_kpts
+    ):
+        """使用Wing Loss计算关键点损失"""
+        batch_idx = batch_idx.flatten()
+        batch_size = len(masks)
+
+        # 查找单个图像中的最大关键点数
+        max_kpts = torch.unique(batch_idx, return_counts=True)[1].max()
+
+        # 创建一个张量来保存批次化关键点
+        batched_keypoints = torch.zeros(
+            (batch_size, max_kpts, keypoints.shape[1], keypoints.shape[2]), device=keypoints.device
+        )
+
+        # 填充batched_keypoints
+        for i in range(batch_size):
+            keypoints_i = keypoints[batch_idx == i]
+            batched_keypoints[i, : keypoints_i.shape[0]] = keypoints_i
+
+        # 扩展target_gt_idx维度以匹配batched_keypoints的形状
+        target_gt_idx_expanded = target_gt_idx.unsqueeze(-1).unsqueeze(-1)
+
+        # 使用target_gt_idx_expanded从batched_keypoints中选择关键点
+        selected_keypoints = batched_keypoints.gather(
+            1, target_gt_idx_expanded.expand(-1, -1, keypoints.shape[1], keypoints.shape[2])
+        )
+
+        # 除以stride
+        selected_keypoints /= stride_tensor.view(1, -1, 1, 1)
+
+        kpts_loss = 0
+        kpts_obj_loss = 0
+
+        if masks.any():
+            gt_kpt = selected_keypoints[masks]
+            area = xyxy2xywh(target_bboxes[masks])[:, 2:].prod(1, keepdim=True)
+            pred_kpt = pred_kpts[masks]
+            
+            # 使用关键点掩码
+            kpt_mask = gt_kpt[..., 2] != 0 if gt_kpt.shape[-1] == 3 else torch.full_like(gt_kpt[..., 0], True)
+            
+            # 使用Wing Loss计算关键点位置损失
+            kpts_loss = self.wing_loss(pred_kpt, gt_kpt, kpt_mask, area)
+            
+            # 如果预测包含可见性，继续使用BCE损失计算可见性损失
+            if pred_kpt.shape[-1] == 3:
+                kpts_obj_loss = self.bce_pose(pred_kpt[..., 2], kpt_mask.float())
+
+        return kpts_loss, kpts_obj_loss
+        
+    def __call__(self, preds, batch):
+        """计算总损失：目标检测损失 + 加权因子 * landmark回归损失"""
+        # 首先使用父类的__call__方法计算基本损失
+        total_loss, loss_items = super().__call__(preds, batch)
+        
+        # 这里的loss_items[1]是pose_loss，我们可以通过landmark_weight调整其权重
+        # 注意：我们保持总损失的计算不变，只调整loss_items中的权重
+        loss_items[1] = loss_items[1] * self.landmark_weight
+        
+        return total_loss, loss_items
+
+
 class v8ClassificationLoss:
     """Criterion class for computing training losses."""
 

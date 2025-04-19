@@ -443,7 +443,8 @@ class CustomPoseModel(DetectionModel):
 
     def init_criterion(self):
         """Initialize the loss criterion for the CustomPoseModel."""
-        return v8PoseLoss(self)
+        from ultralytics.utils.loss import CustomPoseLoss
+        return CustomPoseLoss(self)
 
 
 class ClassificationModel(BaseModel):
